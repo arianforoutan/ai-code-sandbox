@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import ToolMessage
 
 load_dotenv()
-# ۱. ساخت سندباکس و مدل
+
 sandbox = DockerSandbox()
 
 llm = ChatOpenAI(
@@ -16,7 +16,6 @@ llm = ChatOpenAI(
     temperature=0.2
 )
 
-# ۲. تعریف ابزار داکر
 @tool
 def execute_python_code(code: str) -> str:
     """Executes python code inside a secure isolated Docker sandbox and returns the output or error."""
@@ -26,16 +25,16 @@ def execute_python_code(code: str) -> str:
     else:
         return f"ERROR:\n{result['error']}"
 
-# ۳. کلاس ایجنت با مدیریت تمیز پیام‌ها
 class CodeAgentRunner:
     def __init__(self):
         self.llm = llm
+        self.sandbox = sandbox  
         self.tools = {"execute_python_code": execute_python_code}
         self.llm_with_tools = llm.bind_tools([execute_python_code])
 
     def run(self, user_prompt: str, max_turns: int = 5) -> str:
         messages = [
-            ("system", "You are an expert coding assistant. Write a short python script to answer the user, use the 'execute_python_code' tool to run it once, and then immediately output the final result in text. Do not repeat tool calls."),
+            ("system", "You are an expert data analysis coding assistant. First, write a python script to inspect the columns of the CSV file if needed (e.g., print df.columns), then use the 'execute_python_code' tool. If you get an ERROR or unexpected zero/empty results, analyze the error, fix your code, and run it again until you get the correct answer. Finally, output the clear text result."),
             ("human", user_prompt)
         ]
         
@@ -57,7 +56,6 @@ class CodeAgentRunner:
                     except AttributeError:
                         tool_output = tool_func(**tool_args)
                     
-                    # استفاده از ToolMessage استاندارد لنگ‌چین برای بازگرداندن نتیجه
                     messages.append(ToolMessage(
                         content=str(tool_output),
                         tool_call_id=tool_call["id"]
