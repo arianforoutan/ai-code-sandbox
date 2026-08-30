@@ -1,52 +1,64 @@
 import docker
-import tempfile
 import os
 
 class DockerSandbox:
-    def __init__(self, image_name="python:3.10-slim"):
-        # اتصال به داکر دسکتاپ روی سیستم میزبان
+    def __init__(self, workspace_dir: str = "./workspace"):
         self.client = docker.from_env()
-        self.image_name = image_name
+        self.workspace_dir = os.path.abspath(workspace_dir)
+        os.makedirs(self.workspace_dir, exist_ok=True)
+        
+        self.image_name = "ai-sandbox-python:latest"
+        self._build_image_if_needed()
 
-    def run_code(self, code_string: str, timeout: int = 10) -> dict:
-        # ایجاد یک فایل موقت پایتون روی سیستم برای فرستادن کد به داخل کانتینر
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(code_string)
-            temp_file_path = f.name
-
-        container = None
+    def _build_image_if_needed(self):
         try:
-            # ساخت و راه‌اندازی کانتینر داکر با تنظیمات امنیتی (ایزوله کامل)
-            container = self.client.containers.create(
-                self.image_name,
-                command=f"python -c {repr(code_string)}",
-                network_mode="none",  # قطع کامل دسترسی به اینترنت برای امنیت
-                mem_limit="128m"      # محدودیت مصرف رم به 128 مگابایت
+            self.client.images.get(self.image_name)
+        except docker.errors.ImageNotFound:
+            print("Building custom Docker sandbox image (this may take a minute)...")
+            dockerfile_path = os.path.dirname(os.path.abspath(__file__))
+            self.client.images.build(
+                path=dockerfile_path,
+                tag=self.image_name,
+                rm=True
             )
-            container.start()
+            print("Docker image built successfully!")
+
+    def run_code(self, code: str) -> dict:
+        script_path = os.path.join(self.workspace_dir, "script.py")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        try:
+            container = self.client.containers.run(
+                self.image_name,
+                command="python /workspace/script.py",
+                volumes={self.workspace_dir: {'bind': '/workspace', 'mode': 'rw'}},
+                working_dir="/workspace",
+                network_mode="none",  
+                mem_limit="512m",     
+                detach=True
+            )
             
-            # انتظار برای پایان اجرای کد (با تعیین حد نصاب زمان یا Timeout)
-            result = container.wait(timeout=timeout)
+            result = container.wait(timeout=10)
             logs = container.logs(stdout=True, stderr=True).decode('utf-8')
+            container.remove()
             
-            exit_code = result.get("StatusCode", -1)
             return {
-                "exit_code": exit_code,
+                "exit_code": result.get("StatusCode", -1),
                 "output": logs,
-                "error": None if exit_code == 0 else logs
+                "error": "" if result.get("StatusCode", -1) == 0 else logs
             }
         except Exception as e:
+
+
+            try:
+                container.kill()
+                container.remove(force=True)
+            except:
+                pass
+            
             return {
-                "exit_code": -1, 
-                "output": "", 
-                "error": f"Execution failed or timed out: {str(e)}"
+                "exit_code": -1,
+                "output": "",
+                "error": str(e)
             }
-        finally:
-            # پاکسازی و حذف کانتینر بعد از اتمام کار (جلوگیری از انباشته شدن کانتینرها در داکر دسکتاپ)
-            if container:
-                try:
-                    container.remove(force=True)
-                except:
-                    pass
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
